@@ -207,6 +207,15 @@ impl<'a, A: Shape, S: Shape> Div<&'a Tensor<S>> for Graph<'a, A, S> {
     }
 }
 
+// Exp and Log
+pub trait Exp {
+    fn exp(self) -> Self;
+}
+
+pub trait Log {
+    fn log(self) -> Self;
+}
+
 impl<'a, A: Shape, S: Shape> Exp for Graph<'a, A, S> {
     fn exp(mut self) -> Self {
         self.ops.push(GraphOp::Exp);
