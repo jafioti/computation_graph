@@ -8,40 +8,16 @@ use strum::IntoStaticStr;
 
 use crate::tensor::*;
 
-pub trait StoredShape: Debug {
-    fn realized(&self) -> Vec<usize>;
-}
-
-#[derive(Debug)]
-struct ShapeStore<S: Shape>(PhantomData<S>);
-
-impl<S: Shape> Default for ShapeStore<S> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
-
-impl<S: Shape> StoredShape for ShapeStore<S> {
-    fn realized(&self) -> Vec<usize> {
-        S::realized_shape()
-    }
-}
-
 #[derive(Debug, IntoStaticStr)]
 pub enum GraphOp<'a> {
-    Add(Box<dyn StoredShape + 'a>, &'a Vec<f32>),
-    Sub(Box<dyn StoredShape + 'a>, &'a Vec<f32>),
-    Mul(Box<dyn StoredShape + 'a>, &'a Vec<f32>),
-    Div(Box<dyn StoredShape + 'a>, &'a Vec<f32>),
+    Add(Vec<usize>, &'a Vec<f32>),
+    Sub(Vec<usize>, &'a Vec<f32>),
+    Mul(Vec<usize>, &'a Vec<f32>),
+    Div(Vec<usize>, &'a Vec<f32>),
     Log,
     Exp,
     // Add and subtract
-    AddSub(
-        Box<dyn StoredShape + 'a>,
-        &'a Vec<f32>,
-        Box<dyn StoredShape + 'a>,
-        &'a Vec<f32>,
-    ),
+    AddSub(Vec<usize>, &'a Vec<f32>, Vec<usize>, &'a Vec<f32>),
 }
 
 pub struct Graph<'a, A: Shape, S: Shape> {
@@ -196,7 +172,7 @@ impl<'a, A: Shape, S: Shape + 'a> Add<&'a Tensor<S>> for Graph<'a, A, S> {
 
     fn add(mut self, rhs: &'a Tensor<S>) -> Self::Output {
         self.ops
-            .push(GraphOp::Add(Box::<ShapeStore<S>>::default(), &rhs.storage));
+            .push(GraphOp::Add(S::realized_shape(), &rhs.storage));
         self
     }
 }
@@ -206,7 +182,7 @@ impl<'a, A: Shape, S: Shape> Sub<&'a Tensor<S>> for Graph<'a, A, S> {
 
     fn sub(mut self, rhs: &'a Tensor<S>) -> Self::Output {
         self.ops
-            .push(GraphOp::Sub(Box::<ShapeStore<S>>::default(), &rhs.storage));
+            .push(GraphOp::Sub(S::realized_shape(), &rhs.storage));
         self
     }
 }
@@ -216,7 +192,7 @@ impl<'a, A: Shape, S: Shape> Mul<&'a Tensor<S>> for Graph<'a, A, S> {
 
     fn mul(mut self, rhs: &'a Tensor<S>) -> Self::Output {
         self.ops
-            .push(GraphOp::Mul(Box::<ShapeStore<S>>::default(), &rhs.storage));
+            .push(GraphOp::Mul(S::realized_shape(), &rhs.storage));
         self
     }
 }
@@ -226,7 +202,7 @@ impl<'a, A: Shape, S: Shape> Div<&'a Tensor<S>> for Graph<'a, A, S> {
 
     fn div(mut self, rhs: &'a Tensor<S>) -> Self::Output {
         self.ops
-            .push(GraphOp::Div(Box::<ShapeStore<S>>::default(), &rhs.storage));
+            .push(GraphOp::Div(S::realized_shape(), &rhs.storage));
         self
     }
 }
