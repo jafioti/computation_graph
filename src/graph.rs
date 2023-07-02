@@ -16,6 +16,7 @@ pub enum GraphOp<'a> {
     Div(Vec<usize>, &'a Vec<f32>),
     Log,
     Exp,
+    VecMatMul(Vec<usize>, &'a Vec<f32>),
     // Add and subtract
     AddSub(Vec<usize>, &'a Vec<f32>, Vec<usize>, &'a Vec<f32>),
 }
@@ -54,6 +55,14 @@ impl<'a, A: Shape> Graph<'a, A, A> {
 }
 
 impl<'a, A: Shape, S: Shape> Graph<'a, A, S> {
+    fn reform<N: Shape>(self) -> Graph<'a, A, N> {
+        Graph {
+            start: self.start,
+            ops: self.ops,
+            _phantom: Default::default(),
+        }
+    }
+
     pub fn compute(mut self) -> Tensor<S> {
         self.optimize();
 
@@ -91,6 +100,7 @@ impl<'a, A: Shape, S: Shape> Graph<'a, A, S> {
                         *i += d[ind] - b[ind];
                     }
                 }
+                GraphOp::VecMatMul(_, _) => {}
             }
         }
 
@@ -227,5 +237,18 @@ impl<'a, A: Shape, S: Shape> Log for Graph<'a, A, S> {
     fn log(mut self) -> Self {
         self.ops.push(GraphOp::Log);
         self
+    }
+}
+
+impl<'a, A: Shape, const I: usize> Graph<'a, A, Const<I>> {
+    pub fn matmul<const O: usize>(
+        mut self,
+        mat: &'a Tensor<(Const<I>, Const<O>)>,
+    ) -> Graph<'a, A, Const<O>> {
+        self.ops.push(GraphOp::VecMatMul(
+            <(Const<I>, Const<O>)>::realized_shape(),
+            &mat.storage,
+        ));
+        self.reform()
     }
 }
