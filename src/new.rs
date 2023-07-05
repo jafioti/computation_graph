@@ -28,9 +28,10 @@ pub fn main() {
     cx.set_tensor(g, vec![1.0, 2.0, 3.0]);
     cx.set_tensor(e, vec![1.0, 2.0, 3.0]);
 
+    let pre_optimized = cx.petgraph();
     cx.optimize();
 
-    display_petgraph(&cx.petgraph().join(&cx.petgraph()));
+    display_petgraph(&pre_optimized.join(&cx.petgraph()));
 
     let mut cx = cx.execute();
 
@@ -54,7 +55,7 @@ enum Op {
 struct Graph {
     tensors: HashMap<Uuid, Option<Vec<f32>>>,
     op_nodes: HashMap<Uuid, Op>, // The Uuid of the resulting tensors after each op
-    connections: Vec<(Uuid, Uuid)>, // The edges of the computation graph
+    connections: HashMap<Uuid, Vec<Uuid>>, // The edges of the computation graph
 }
 
 struct ExecutedGraph {
@@ -111,7 +112,7 @@ impl Graph {
         Graph {
             tensors: HashMap::default(),
             op_nodes: HashMap::default(),
-            connections: vec![],
+            connections: HashMap::default(),
         }
     }
 
@@ -127,46 +128,86 @@ impl Graph {
     fn add<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = Uuid::new_v4();
         self.op_nodes.insert(new_id, Op::Add);
-        self.connections.push((t1.id, new_id));
-        self.connections.push((t2.id, new_id));
+        if let Some(v) = self.connections.get_mut(&t1.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t1.id, vec![new_id]);
+        }
+        if let Some(v) = self.connections.get_mut(&t2.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t2.id, vec![new_id]);
+        }
         GraphTensor::from_id(new_id)
     }
 
     fn sub<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = Uuid::new_v4();
         self.op_nodes.insert(new_id, Op::Sub);
-        self.connections.push((t1.id, new_id));
-        self.connections.push((t2.id, new_id));
+        if let Some(v) = self.connections.get_mut(&t1.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t1.id, vec![new_id]);
+        }
+        if let Some(v) = self.connections.get_mut(&t2.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t2.id, vec![new_id]);
+        }
         GraphTensor::from_id(new_id)
     }
 
     fn mul<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = Uuid::new_v4();
         self.op_nodes.insert(new_id, Op::Mul);
-        self.connections.push((t1.id, new_id));
-        self.connections.push((t2.id, new_id));
+        if let Some(v) = self.connections.get_mut(&t1.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t1.id, vec![new_id]);
+        }
+        if let Some(v) = self.connections.get_mut(&t2.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t2.id, vec![new_id]);
+        }
         GraphTensor::from_id(new_id)
     }
 
     fn div<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = Uuid::new_v4();
         self.op_nodes.insert(new_id, Op::Div);
-        self.connections.push((t1.id, new_id));
-        self.connections.push((t2.id, new_id));
+        if let Some(v) = self.connections.get_mut(&t1.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t1.id, vec![new_id]);
+        }
+        if let Some(v) = self.connections.get_mut(&t2.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t2.id, vec![new_id]);
+        }
         GraphTensor::from_id(new_id)
     }
 
     fn log<S: Shape>(&mut self, t1: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = Uuid::new_v4();
         self.op_nodes.insert(new_id, Op::Log);
-        self.connections.push((t1.id, new_id));
+        if let Some(v) = self.connections.get_mut(&t1.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t1.id, vec![new_id]);
+        }
         GraphTensor::from_id(new_id)
     }
 
     fn exp<S: Shape>(&mut self, t1: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = Uuid::new_v4();
         self.op_nodes.insert(new_id, Op::Exp);
-        self.connections.push((t1.id, new_id));
+        if let Some(v) = self.connections.get_mut(&t1.id) {
+            v.push(new_id);
+        } else {
+            self.connections.insert(t1.id, vec![new_id]);
+        }
         GraphTensor::from_id(new_id)
     }
 
@@ -174,12 +215,41 @@ impl Graph {
         *self.tensors.get_mut(&graph_tensor.id).unwrap() = Some(data);
     }
 
-    fn optimize(&mut self) {}
+    fn optimize(&mut self) {
+        let mut reverse_edges: HashMap<Uuid, Vec<Uuid>> = self
+            .connections
+            .clone()
+            .into_iter()
+            .flat_map(|(src, dests)| dests.iter().map(|dest| (*dest, src)).collect::<Vec<_>>())
+            .into_group_map();
+        // Scan through unary sequential eliminations
+        for (id, op_node) in self.op_nodes.clone() {
+            if self.op_nodes.contains_key(&id) {
+                for outgoing_connection in self.connections.get(&id).cloned().unwrap_or_default() {
+                    if (matches!(op_node, Op::Exp)
+                        && matches!(self.op_nodes[&outgoing_connection], Op::Log))
+                        || (matches!(op_node, Op::Log)
+                            && matches!(self.op_nodes[&outgoing_connection], Op::Exp))
+                    {
+                        // Remove current node and next node
+                        *self.connections.get_mut(&reverse_edges[&id][0]).unwrap() =
+                            self.connections[&outgoing_connection].clone();
+                        reverse_edges.remove(&self.connections[&outgoing_connection][0]);
+                        reverse_edges.remove(&self.connections[&outgoing_connection][0]);
+                        self.connections.remove(&outgoing_connection);
+                        self.op_nodes.remove(&outgoing_connection);
+                        self.op_nodes.remove(&id);
+                        self.connections.remove(&id);
+                    }
+                }
+            }
+        }
+    }
 
     fn execute(self) -> ExecutedGraph {
         let mut ready_nodes = self.tensors;
         let mut new_ready_nodes: HashMap<Uuid, Option<Vec<f32>>> = HashMap::default();
-        let mut edges: HashMap<Uuid, Vec<Uuid>> = self.connections.into_iter().into_group_map();
+        let mut edges: HashMap<Uuid, Vec<Uuid>> = self.connections;
         let mut reverse_edges: HashMap<Uuid, Vec<Uuid>> = edges
             .iter()
             .flat_map(|(src, dests)| dests.iter().map(|dest| (*dest, *src)).collect::<Vec<_>>())
@@ -254,6 +324,14 @@ impl Graph {
                                         new_ready_nodes.insert(edge, Some(f));
                                     }
                                 }
+                            } else {
+                                let x: &'static str = self.op_nodes[&edge].into();
+                                println!(
+                                    "Op: {} Sources: {} Expected Sources: {}",
+                                    x,
+                                    srcs.len(),
+                                    reverse_edges[&edge].len()
+                                );
                             }
                         }
                     }
@@ -291,7 +369,9 @@ impl Graph {
 
         // Edges
         for (from, to) in &self.connections {
-            graph.add_edge(nodes[from], nodes[to], false);
+            for to in to {
+                graph.add_edge(nodes[from], nodes[to], false);
+            }
         }
 
         graph
