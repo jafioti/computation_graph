@@ -63,9 +63,8 @@ impl<'a, A: Shape, S: Shape> Graph<'a, A, S> {
         }
     }
 
-    pub fn compute(mut self) -> Tensor<S> {
-        self.optimize();
-
+    /// Execute the graph. `optimize()` should be called before this.
+    pub fn compute(self) -> Tensor<S> {
         let mut running_tensor = self.start.storage;
         for op in self.ops {
             match op {
@@ -177,78 +176,78 @@ macro_rules! check_adjacent_ops {
     }};
 }
 
-impl<'a, A: Shape, S: Shape + 'a> Add<&'a Tensor<S>> for Graph<'a, A, S> {
-    type Output = Graph<'a, A, S>;
+// impl<'a, A: Shape, S: Shape + 'a> Add<&'a Tensor<S>> for Graph<'a, A, S> {
+//     type Output = Graph<'a, A, S>;
 
-    fn add(mut self, rhs: &'a Tensor<S>) -> Self::Output {
-        self.ops
-            .push(GraphOp::Add(S::realized_shape(), &rhs.storage));
-        self
-    }
-}
+//     fn add(mut self, rhs: &'a Tensor<S>) -> Self::Output {
+//         self.ops
+//             .push(GraphOp::Add(S::realized_shape(), &rhs.storage));
+//         self
+//     }
+// }
 
-impl<'a, A: Shape, S: Shape> Sub<&'a Tensor<S>> for Graph<'a, A, S> {
-    type Output = Graph<'a, A, S>;
+// impl<'a, A: Shape, S: Shape> Sub<&'a Tensor<S>> for Graph<'a, A, S> {
+//     type Output = Graph<'a, A, S>;
 
-    fn sub(mut self, rhs: &'a Tensor<S>) -> Self::Output {
-        self.ops
-            .push(GraphOp::Sub(S::realized_shape(), &rhs.storage));
-        self
-    }
-}
+//     fn sub(mut self, rhs: &'a Tensor<S>) -> Self::Output {
+//         self.ops
+//             .push(GraphOp::Sub(S::realized_shape(), &rhs.storage));
+//         self
+//     }
+// }
 
-impl<'a, A: Shape, S: Shape> Mul<&'a Tensor<S>> for Graph<'a, A, S> {
-    type Output = Graph<'a, A, S>;
+// impl<'a, A: Shape, S: Shape> Mul<&'a Tensor<S>> for Graph<'a, A, S> {
+//     type Output = Graph<'a, A, S>;
 
-    fn mul(mut self, rhs: &'a Tensor<S>) -> Self::Output {
-        self.ops
-            .push(GraphOp::Mul(S::realized_shape(), &rhs.storage));
-        self
-    }
-}
+//     fn mul(mut self, rhs: &'a Tensor<S>) -> Self::Output {
+//         self.ops
+//             .push(GraphOp::Mul(S::realized_shape(), &rhs.storage));
+//         self
+//     }
+// }
 
-impl<'a, A: Shape, S: Shape> Div<&'a Tensor<S>> for Graph<'a, A, S> {
-    type Output = Graph<'a, A, S>;
+// impl<'a, A: Shape, S: Shape> Div<&'a Tensor<S>> for Graph<'a, A, S> {
+//     type Output = Graph<'a, A, S>;
 
-    fn div(mut self, rhs: &'a Tensor<S>) -> Self::Output {
-        self.ops
-            .push(GraphOp::Div(S::realized_shape(), &rhs.storage));
-        self
-    }
-}
+//     fn div(mut self, rhs: &'a Tensor<S>) -> Self::Output {
+//         self.ops
+//             .push(GraphOp::Div(S::realized_shape(), &rhs.storage));
+//         self
+//     }
+// }
 
-// Exp and Log
-pub trait Exp {
-    fn exp(self) -> Self;
-}
+// // Exp and Log
+// pub trait Exp {
+//     fn exp(self) -> Self;
+// }
 
-pub trait Log {
-    fn log(self) -> Self;
-}
+// pub trait Log {
+//     fn log(self) -> Self;
+// }
 
-impl<'a, A: Shape, S: Shape> Exp for Graph<'a, A, S> {
-    fn exp(mut self) -> Self {
-        self.ops.push(GraphOp::Exp);
-        self
-    }
-}
+// impl<'a, A: Shape, S: Shape> Exp for Graph<'a, A, S> {
+//     fn exp(mut self) -> Self {
+//         self.ops.push(GraphOp::Exp);
+//         self
+//     }
+// }
 
-impl<'a, A: Shape, S: Shape> Log for Graph<'a, A, S> {
-    fn log(mut self) -> Self {
-        self.ops.push(GraphOp::Log);
-        self
-    }
-}
+// impl<'a, A: Shape, S: Shape> Log for Graph<'a, A, S> {
+//     fn log(mut self) -> Self {
+//         self.ops.push(GraphOp::Log);
+//         self
+//     }
+// }
 
-impl<'a, A: Shape, const I: usize> Graph<'a, A, Const<I>> {
-    pub fn matmul<const O: usize>(
-        mut self,
-        mat: &'a Tensor<(Const<I>, Const<O>)>,
-    ) -> Graph<'a, A, Const<O>> {
-        self.ops.push(GraphOp::VecMatMul(
-            <(Const<I>, Const<O>)>::realized_shape(),
-            &mat.storage,
-        ));
-        self.reform()
-    }
-}
+// impl<'a, A: Shape, const I: usize> Graph<'a, A, Const<I>> {
+//     pub fn matmul<const O: usize>(
+//         mut self,
+//         mat: &'a Tensor<(Const<I>, Const<O>)>,
+//     ) -> Graph<'a, A, Const<O>> {
+//         self.ops.push(GraphOp::VecMatMul(
+//             <(Const<I>, Const<O>)>::realized_shape(),
+//             &mat.storage,
+//         ));
+//         self.reform()
+//     }
+// }

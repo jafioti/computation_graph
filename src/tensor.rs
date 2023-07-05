@@ -5,14 +5,14 @@ use std::{
 
 use crate::graph::Graph;
 
-pub trait Shape: Debug {
+pub trait Shape: Debug + Copy {
     fn realized_shape() -> Vec<usize>;
     fn num_elements() -> usize {
         Self::realized_shape().iter().sum()
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Const<const U: usize>;
 
 impl<const A: usize> Shape for Const<A> {
