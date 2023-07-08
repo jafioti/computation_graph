@@ -23,9 +23,6 @@ pub fn main() {
         .log(&mut cx)
         .sub(&mut cx, a);
 
-    println!("A: {:?}", a.id);
-    println!("D: {:?}", d.id);
-
     cx.set_tensor(b, vec![1.0, 2.0, 3.0]);
     cx.set_tensor(c, vec![1.0, 2.0, 3.0]);
     cx.set_tensor(g, vec![1.0, 2.0, 3.0]);
@@ -67,7 +64,6 @@ struct ExecutedGraph {
 
 impl ExecutedGraph {
     pub fn get<S: Shape>(&mut self, tensor: GraphTensor<S>) -> Option<Vec<f32>> {
-        println!("Fetching {:?}", tensor.id);
         self.tensors.remove(&tensor.id)
     }
 }
@@ -202,17 +198,11 @@ impl Graph {
                         .unwrap()
                         .source();
 
-                    // Remove pre_node and all edges going to it, and replace it with a new one with id
-                    for target in self
-                        .graph
-                        .edges_directed(outgoing_target, petgraph::Direction::Outgoing)
-                        .map(|e| e.target())
-                        .collect_vec()
-                    {
-                        self.graph.add_edge(pre_node, target, false);
-                    }
-                    self.graph.remove_node(outgoing_target);
+                    self.graph.move_incoming_edges(pre_node, outgoing_target);
+                    self.graph.remove_node(pre_node);
                     self.graph.remove_node(id);
+                    self.op_nodes
+                        .insert(outgoing_target, self.op_nodes[&pre_node]);
                 }
             }
         }
@@ -307,8 +297,6 @@ impl Graph {
             }
         }
 
-        println!("Tensors: {:?}", self.tensors);
-
         ExecutedGraph {
             tensors: self
                 .tensors
@@ -370,5 +358,41 @@ impl JoinGraph for petgraph::stable_graph::StableGraph<String, bool, petgraph::D
         }
 
         self
+    }
+}
+
+trait MoveIncomingEdges {
+    fn move_incoming_edges(
+        &mut self,
+        orig_id: petgraph::graph::NodeIndex,
+        new_id: petgraph::graph::NodeIndex,
+    );
+}
+
+impl MoveIncomingEdges
+    for petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>
+{
+    fn move_incoming_edges(
+        &mut self,
+        orig_id: petgraph::graph::NodeIndex,
+        new_id: petgraph::graph::NodeIndex,
+    ) {
+        // Clear incoming edges off new node
+        for edge in self
+            .edges_directed(new_id, petgraph::Direction::Incoming)
+            .map(|e| e.id())
+            .collect_vec()
+        {
+            self.remove_edge(edge);
+        }
+
+        // Create new edges
+        for source in self
+            .edges_directed(orig_id, petgraph::Direction::Incoming)
+            .map(|e| e.source())
+            .collect_vec()
+        {
+            self.add_edge(source, new_id, false);
+        }
     }
 }
