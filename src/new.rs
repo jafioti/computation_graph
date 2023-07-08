@@ -1,7 +1,7 @@
 use std::{collections::HashMap, marker::PhantomData};
 
 use itertools::Itertools;
-use petgraph::visit::EdgeRef;
+use petgraph::{graph::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Directed, Direction};
 use strum::IntoStaticStr;
 
 use crate::tensor::{Const, Shape};
@@ -23,15 +23,16 @@ pub fn main() {
         .log(&mut cx)
         .sub(&mut cx, a);
 
+    let pre_optimized = cx.petgraph();
+
+    cx.optimize();
+
+    display_petgraph(&pre_optimized.join(&cx.petgraph()));
+
     cx.set_tensor(b, vec![1.0, 2.0, 3.0]);
     cx.set_tensor(c, vec![1.0, 2.0, 3.0]);
     cx.set_tensor(g, vec![1.0, 2.0, 3.0]);
     cx.set_tensor(e, vec![1.0, 2.0, 3.0]);
-
-    let pre_optimized = cx.petgraph();
-    cx.optimize();
-
-    display_petgraph(&pre_optimized.join(&cx.petgraph()));
 
     let mut cx = cx.execute();
 
@@ -53,13 +54,13 @@ enum Op {
 }
 
 struct Graph {
-    tensors: HashMap<petgraph::graph::NodeIndex, Option<Vec<f32>>>,
-    op_nodes: HashMap<petgraph::graph::NodeIndex, Op>, // The Uuid of the resulting tensors after each op
-    graph: petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>,
+    tensors: HashMap<NodeIndex, Option<Vec<f32>>>,
+    op_nodes: HashMap<NodeIndex, Op>, // The Uuid of the resulting tensors after each op
+    graph: StableGraph<String, bool, Directed, u32>,
 }
 
 struct ExecutedGraph {
-    tensors: HashMap<petgraph::graph::NodeIndex, Vec<f32>>,
+    tensors: HashMap<NodeIndex, Vec<f32>>,
 }
 
 impl ExecutedGraph {
@@ -70,12 +71,12 @@ impl ExecutedGraph {
 
 #[derive(Clone, Copy)]
 struct GraphTensor<S: Shape> {
-    id: petgraph::graph::NodeIndex,
+    id: NodeIndex,
     _phantom: PhantomData<S>,
 }
 
 impl<S: Shape> GraphTensor<S> {
-    fn from_id(id: petgraph::graph::NodeIndex) -> Self {
+    fn from_id(id: NodeIndex) -> Self {
         Self {
             id,
             _phantom: Default::default(),
@@ -175,6 +176,7 @@ impl Graph {
         *self.tensors.get_mut(&graph_tensor.id).unwrap() = Some(data);
     }
 
+    /// Run the full suite of optimizations
     fn optimize(&mut self) {
         self.unary_sequential_opt();
         self.cse_opt();
@@ -224,14 +226,25 @@ impl Graph {
             let mut eliminated = false;
             let mut srcs_set = HashMap::new();
             for node in self.graph.node_indices().collect_vec() {
-                let srcs = self
+                let mut srcs = self
                     .graph
                     .edges_directed(node, petgraph::Direction::Incoming)
                     .map(|e| e.source())
                     .collect_vec();
+
                 if srcs.is_empty() || self.op_nodes.get(&node).is_none() {
                     continue;
                 }
+
+                // If order doesn't matter, make sure  different ordered srcs match by sorting
+                let order_matters = match self.op_nodes[&node] {
+                    Op::Add | Op::Exp | Op::Log | Op::Mul => false,
+                    Op::Div | Op::Sub => true,
+                };
+                if !order_matters {
+                    srcs.sort();
+                }
+
                 if let Some(other_node) = srcs_set.get(&srcs) {
                     if self.op_nodes[&node] == self.op_nodes[other_node] {
                         // Carry over outgoing edges from node to other_node
@@ -412,24 +425,14 @@ impl JoinGraph for petgraph::stable_graph::StableGraph<String, bool, petgraph::D
 }
 
 trait MoveIncomingEdges {
-    fn move_incoming_edges(
-        &mut self,
-        orig_id: petgraph::graph::NodeIndex,
-        new_id: petgraph::graph::NodeIndex,
-    );
+    fn move_incoming_edges(&mut self, orig_id: NodeIndex, new_id: NodeIndex);
 }
 
-impl MoveIncomingEdges
-    for petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>
-{
-    fn move_incoming_edges(
-        &mut self,
-        orig_id: petgraph::graph::NodeIndex,
-        new_id: petgraph::graph::NodeIndex,
-    ) {
+impl MoveIncomingEdges for StableGraph<String, bool, petgraph::Directed, u32> {
+    fn move_incoming_edges(&mut self, orig_id: NodeIndex, new_id: NodeIndex) {
         // Clear incoming edges off new node
         for edge in self
-            .edges_directed(new_id, petgraph::Direction::Incoming)
+            .edges_directed(new_id, Direction::Incoming)
             .map(|e| e.id())
             .collect_vec()
         {
@@ -438,7 +441,7 @@ impl MoveIncomingEdges
 
         // Create new edges
         for source in self
-            .edges_directed(orig_id, petgraph::Direction::Incoming)
+            .edges_directed(orig_id, Direction::Incoming)
             .map(|e| e.source())
             .collect_vec()
         {
