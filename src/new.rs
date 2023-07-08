@@ -16,7 +16,12 @@ pub fn main() {
     let e = cx.tensor::<R1<3>>();
 
     let a = b.mul(&mut cx, c).add(&mut cx, g);
-    let d = b.mul(&mut cx, c).mul(&mut cx, e).exp(&mut cx).log(&mut cx);
+    let d = b
+        .mul(&mut cx, c)
+        .mul(&mut cx, e)
+        .exp(&mut cx)
+        .log(&mut cx)
+        .sub(&mut cx, a);
 
     println!("A: {:?}", a.id);
     println!("D: {:?}", d.id);
@@ -52,25 +57,18 @@ enum Op {
 
 struct Graph {
     tensors: HashMap<petgraph::graph::NodeIndex, Option<Vec<f32>>>,
-    tensor_remap: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex>,
-    tensor_reverse_remap: HashMap<petgraph::graph::NodeIndex, Vec<petgraph::graph::NodeIndex>>,
     op_nodes: HashMap<petgraph::graph::NodeIndex, Op>, // The Uuid of the resulting tensors after each op
-    graph: petgraph::Graph<String, bool, petgraph::Directed, u32>,
+    graph: petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>,
 }
 
 struct ExecutedGraph {
     tensors: HashMap<petgraph::graph::NodeIndex, Vec<f32>>,
-    remap: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex>,
 }
 
 impl ExecutedGraph {
     pub fn get<S: Shape>(&mut self, tensor: GraphTensor<S>) -> Option<Vec<f32>> {
         println!("Fetching {:?}", tensor.id);
-        if let Some(id) = self.remap.get(&tensor.id) {
-            self.tensors.remove(id)
-        } else {
-            self.tensors.remove(&tensor.id)
-        }
+        self.tensors.remove(&tensor.id)
     }
 }
 
@@ -118,9 +116,7 @@ impl Graph {
         Graph {
             tensors: HashMap::default(),
             op_nodes: HashMap::default(),
-            tensor_remap: HashMap::default(),
-            tensor_reverse_remap: HashMap::default(),
-            graph: petgraph::Graph::default(),
+            graph: petgraph::stable_graph::StableGraph::default(),
         }
     }
 
@@ -217,27 +213,9 @@ impl Graph {
                     }
                     self.graph.remove_node(outgoing_target);
                     self.graph.remove_node(id);
-
-                    // Remap anything depending on the removed nodes
-                    self.remap_tensor(id, pre_node);
-                    self.remap_tensor(outgoing_target, pre_node);
                 }
             }
         }
-    }
-
-    fn remap_tensor(&mut self, src: petgraph::graph::NodeIndex, trg: petgraph::graph::NodeIndex) {
-        // Check if we're already remapping src
-        if let Some(s) = self.tensor_reverse_remap.get(&src).cloned() {
-            for i in &s {
-                self.tensor_remap.insert(*i, trg);
-            }
-            self.tensor_reverse_remap.insert(trg, s);
-        } else {
-            self.tensor_reverse_remap.insert(trg, vec![src]);
-        }
-        self.tensor_reverse_remap.remove(&src);
-        self.tensor_remap.insert(src, trg);
     }
 
     fn execute(mut self) -> ExecutedGraph {
@@ -337,17 +315,20 @@ impl Graph {
                 .into_iter()
                 .flat_map(|(id, data)| data.map(|data| (id, data)))
                 .collect(),
-            remap: self.tensor_remap,
         }
     }
 
     // Convert to petgraph
-    fn petgraph(&self) -> petgraph::Graph<String, bool, petgraph::Directed, u32> {
+    fn petgraph(
+        &self,
+    ) -> petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32> {
         self.graph.clone()
     }
 }
 
-fn display_petgraph(graph: &petgraph::Graph<String, bool, petgraph::Directed, u32>) {
+fn display_petgraph(
+    graph: &petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>,
+) {
     // Display in browser
     let url = format!(
         "https://dreampuf.github.io/GraphvizOnline/#{}",
@@ -362,18 +343,30 @@ fn display_petgraph(graph: &petgraph::Graph<String, bool, petgraph::Directed, u3
 }
 
 trait JoinGraph {
-    fn join(self, rhs: &petgraph::Graph<String, bool, petgraph::Directed, u32>) -> Self;
+    fn join(
+        self,
+        rhs: &petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>,
+    ) -> Self;
 }
 
-impl JoinGraph for petgraph::Graph<String, bool, petgraph::Directed, u32> {
-    fn join(mut self, rhs: &petgraph::Graph<String, bool, petgraph::Directed, u32>) -> Self {
+impl JoinGraph for petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32> {
+    fn join(
+        mut self,
+        rhs: &petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>,
+    ) -> Self {
         let mut id_map = HashMap::new(); // We track the node id remapping here so they don't overlap
         for (index, node) in rhs.node_indices().zip(rhs.node_weights()) {
             id_map.insert(index, self.add_node(node.clone()));
         }
 
-        for edge in rhs.raw_edges() {
-            self.add_edge(id_map[&edge.source()], id_map[&edge.target()], edge.weight);
+        for node in rhs.node_indices() {
+            for edge in rhs.edges_directed(node, petgraph::Direction::Outgoing) {
+                self.add_edge(
+                    id_map[&edge.source()],
+                    id_map[&edge.target()],
+                    *edge.weight(),
+                );
+            }
         }
 
         self
@@ -388,7 +381,9 @@ trait MoveIncomingEdges {
     );
 }
 
-impl MoveIncomingEdges for petgraph::Graph<String, bool, petgraph::Directed, u32> {
+impl MoveIncomingEdges
+    for petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>
+{
     fn move_incoming_edges(
         &mut self,
         orig_id: petgraph::graph::NodeIndex,
