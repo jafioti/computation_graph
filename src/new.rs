@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     ops::{Add, Div, Mul, Sub},
-    sync::{Arc, Mutex},
 };
 
 use itertools::Itertools;
@@ -15,13 +14,13 @@ type R1<const D: usize> = (Const<D>,);
 
 pub fn main() {
     let mut cx = Graph::new();
-    let b = new_tensor::<R1<3>>(&mut cx);
-    let c = new_tensor::<R1<3>>(&mut cx);
-    let g = new_tensor::<R1<3>>(&mut cx);
-    let e = new_tensor::<R1<3>>(&mut cx);
+    let b = cx.new_tensor::<R1<3>>();
+    let c = cx.new_tensor::<R1<3>>();
+    let g = cx.new_tensor::<R1<3>>();
+    let e = cx.new_tensor::<R1<3>>();
 
     let a = b * c + g;
-    let d = (b * c * e).exp().log() - a;
+    let d = (b * c / e).exp().log() - a;
 
     let pre_optimized = cx.petgraph();
 
@@ -95,15 +94,6 @@ impl<S: Shape> GraphTensor<S> {
     }
 }
 
-fn new_tensor<S: Shape>(graph: &mut Graph) -> GraphTensor<S> {
-    let id = graph.new_tensor_id();
-    GraphTensor {
-        id,
-        graph_ref: graph,
-        _phantom: Default::default(),
-    }
-}
-
 impl Graph {
     fn new() -> Graph {
         Graph {
@@ -113,10 +103,14 @@ impl Graph {
         }
     }
 
-    fn new_tensor_id(&mut self) -> NodeIndex {
+    fn new_tensor<S: Shape>(&mut self) -> GraphTensor<S> {
         let id = self.graph.add_node((self.tensors.len() + 1).to_string());
         self.tensors.insert(id, None);
-        id
+        GraphTensor {
+            id,
+            graph_ref: self,
+            _phantom: Default::default(),
+        }
     }
 
     fn add<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
