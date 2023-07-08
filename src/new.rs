@@ -372,39 +372,3 @@ impl JoinGraph for petgraph::stable_graph::StableGraph<String, bool, petgraph::D
         self
     }
 }
-
-trait MoveIncomingEdges {
-    fn move_incoming_edges(
-        &mut self,
-        orig_id: petgraph::graph::NodeIndex,
-        new_id: petgraph::graph::NodeIndex,
-    );
-}
-
-impl MoveIncomingEdges
-    for petgraph::stable_graph::StableGraph<String, bool, petgraph::Directed, u32>
-{
-    fn move_incoming_edges(
-        &mut self,
-        orig_id: petgraph::graph::NodeIndex,
-        new_id: petgraph::graph::NodeIndex,
-    ) {
-        // Clear incoming edges off new node
-        for edge in self
-            .edges_directed(new_id, petgraph::Direction::Incoming)
-            .map(|e| e.id())
-            .collect_vec()
-        {
-            self.remove_edge(edge);
-        }
-
-        // Create new edges
-        for source in self
-            .edges_directed(orig_id, petgraph::Direction::Incoming)
-            .map(|e| e.source())
-            .collect_vec()
-        {
-            self.add_edge(source, new_id, false);
-        }
-    }
-}
