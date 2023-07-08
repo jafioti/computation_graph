@@ -1,4 +1,9 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    ops::{Add, Div, Mul, Sub},
+    sync::{Arc, Mutex},
+};
 
 use itertools::Itertools;
 use petgraph::{graph::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Directed, Direction};
@@ -9,35 +14,35 @@ use crate::tensor::{Const, Shape};
 type R1<const D: usize> = (Const<D>,);
 
 pub fn main() {
-    let mut cx = Graph::new();
-    let b = cx.tensor::<R1<3>>();
-    let c = cx.tensor::<R1<3>>();
-    let g = cx.tensor::<R1<3>>();
-    let e = cx.tensor::<R1<3>>();
+    let cx = Arc::new(Mutex::new(Graph::new()));
+    let b = new_tensor::<R1<3>>(cx.clone());
+    let c = new_tensor::<R1<3>>(cx.clone());
+    let g = new_tensor::<R1<3>>(cx.clone());
+    let e = new_tensor::<R1<3>>(cx.clone());
 
-    let a = b.mul(&mut cx, c).add(&mut cx, g);
-    let d = b
-        .mul(&mut cx, c)
-        .mul(&mut cx, e)
-        .exp(&mut cx)
-        .log(&mut cx)
-        .sub(&mut cx, a);
+    let a = b.clone() * c.clone() + g.clone();
+    let d = b.clone() * c.clone() * e.clone() - a.clone();
 
-    let pre_optimized = cx.petgraph();
+    let a_id = a.id;
+    let d_id = d.id;
 
-    cx.optimize();
+    let pre_optimized = cx.lock().unwrap().petgraph();
 
-    display_petgraph(&pre_optimized.join(&cx.petgraph()));
+    cx.lock().unwrap().optimize();
 
-    cx.set_tensor(b, vec![1.0, 2.0, 3.0]);
-    cx.set_tensor(c, vec![1.0, 2.0, 3.0]);
-    cx.set_tensor(g, vec![1.0, 2.0, 3.0]);
-    cx.set_tensor(e, vec![1.0, 2.0, 3.0]);
+    // display_petgraph(&pre_optimized.join(&cx.lock().unwrap().petgraph()));
 
-    let mut cx = cx.execute();
+    cx.lock().unwrap().set_tensor(b, vec![1.0, 2.0, 3.0]);
+    cx.lock().unwrap().set_tensor(c, vec![1.0, 2.0, 3.0]);
+    cx.lock().unwrap().set_tensor(g, vec![1.0, 2.0, 3.0]);
+    cx.lock().unwrap().set_tensor(e, vec![1.0, 2.0, 3.0]);
 
-    let a = cx.get(a).unwrap();
-    let d = cx.get(d).unwrap();
+    drop((a, d));
+
+    let mut cx = Arc::try_unwrap(cx).unwrap().into_inner().unwrap().execute();
+
+    let a = cx.get(a_id).unwrap();
+    let d = cx.get(d_id).unwrap();
 
     println!("A: {:?}", a);
     println!("D: {:?}", d);
@@ -53,6 +58,7 @@ enum Op {
     Exp,
 }
 
+#[derive(Debug)]
 struct Graph {
     tensors: HashMap<NodeIndex, Option<Vec<f32>>>,
     op_nodes: HashMap<NodeIndex, Op>, // The Uuid of the resulting tensors after each op
@@ -64,21 +70,23 @@ struct ExecutedGraph {
 }
 
 impl ExecutedGraph {
-    pub fn get<S: Shape>(&mut self, tensor: GraphTensor<S>) -> Option<Vec<f32>> {
-        self.tensors.remove(&tensor.id)
+    pub fn get(&mut self, id: NodeIndex) -> Option<Vec<f32>> {
+        self.tensors.remove(&id)
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct GraphTensor<S: Shape> {
     id: NodeIndex,
+    graph_ref: Arc<Mutex<Graph>>,
     _phantom: PhantomData<S>,
 }
 
 impl<S: Shape> GraphTensor<S> {
-    fn from_id(id: NodeIndex) -> Self {
+    fn from_id(id: NodeIndex, graph_ref: Arc<Mutex<Graph>>) -> Self {
         Self {
             id,
+            graph_ref,
             _phantom: Default::default(),
         }
     }
@@ -108,6 +116,15 @@ impl<S: Shape> GraphTensor<S> {
     }
 }
 
+fn new_tensor<S: Shape>(graph: Arc<Mutex<Graph>>) -> GraphTensor<S> {
+    let id = graph.lock().unwrap().new_tensor_id();
+    GraphTensor {
+        id,
+        graph_ref: graph,
+        _phantom: Default::default(),
+    }
+}
+
 impl Graph {
     fn new() -> Graph {
         Graph {
@@ -117,13 +134,10 @@ impl Graph {
         }
     }
 
-    fn tensor<S: Shape>(&mut self) -> GraphTensor<S> {
-        let tensor = GraphTensor {
-            id: self.graph.add_node((self.tensors.len() + 1).to_string()),
-            _phantom: Default::default(),
-        };
-        self.tensors.insert(tensor.id, None);
-        tensor
+    fn new_tensor_id(&mut self) -> NodeIndex {
+        let id = self.graph.add_node((self.tensors.len() + 1).to_string());
+        self.tensors.insert(id, None);
+        id
     }
 
     fn add<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
@@ -131,7 +145,7 @@ impl Graph {
         self.op_nodes.insert(new_id, Op::Add);
         self.graph.add_edge(t1.id, new_id, false);
         self.graph.add_edge(t2.id, new_id, false);
-        GraphTensor::from_id(new_id)
+        GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn sub<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
@@ -139,7 +153,7 @@ impl Graph {
         self.op_nodes.insert(new_id, Op::Sub);
         self.graph.add_edge(t1.id, new_id, false);
         self.graph.add_edge(t2.id, new_id, false);
-        GraphTensor::from_id(new_id)
+        GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn mul<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
@@ -147,7 +161,7 @@ impl Graph {
         self.op_nodes.insert(new_id, Op::Mul);
         self.graph.add_edge(t1.id, new_id, false);
         self.graph.add_edge(t2.id, new_id, false);
-        GraphTensor::from_id(new_id)
+        GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn div<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
@@ -155,21 +169,21 @@ impl Graph {
         self.op_nodes.insert(new_id, Op::Div);
         self.graph.add_edge(t1.id, new_id, false);
         self.graph.add_edge(t2.id, new_id, false);
-        GraphTensor::from_id(new_id)
+        GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn log<S: Shape>(&mut self, t1: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = self.graph.add_node("Log".to_string());
         self.op_nodes.insert(new_id, Op::Log);
         self.graph.add_edge(t1.id, new_id, false);
-        GraphTensor::from_id(new_id)
+        GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn exp<S: Shape>(&mut self, t1: GraphTensor<S>) -> GraphTensor<S> {
         let new_id = self.graph.add_node("Exp".to_string());
         self.op_nodes.insert(new_id, Op::Exp);
         self.graph.add_edge(t1.id, new_id, false);
-        GraphTensor::from_id(new_id)
+        GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn set_tensor<S: Shape>(&mut self, graph_tensor: GraphTensor<S>, data: Vec<f32>) {
@@ -421,6 +435,38 @@ impl JoinGraph for petgraph::stable_graph::StableGraph<String, bool, petgraph::D
         }
 
         self
+    }
+}
+
+impl<S: Shape> Add<GraphTensor<S>> for GraphTensor<S> {
+    type Output = GraphTensor<S>;
+
+    fn add(self, rhs: GraphTensor<S>) -> Self::Output {
+        self.graph_ref.lock().unwrap().add(self.clone(), rhs)
+    }
+}
+
+impl<S: Shape> Sub<GraphTensor<S>> for GraphTensor<S> {
+    type Output = GraphTensor<S>;
+
+    fn sub(self, rhs: GraphTensor<S>) -> Self::Output {
+        self.graph_ref.lock().unwrap().sub(self.clone(), rhs)
+    }
+}
+
+impl<S: Shape> Mul<GraphTensor<S>> for GraphTensor<S> {
+    type Output = GraphTensor<S>;
+
+    fn mul(self, rhs: GraphTensor<S>) -> Self::Output {
+        self.graph_ref.lock().unwrap().mul(self.clone(), rhs)
+    }
+}
+
+impl<S: Shape> Div<GraphTensor<S>> for GraphTensor<S> {
+    type Output = GraphTensor<S>;
+
+    fn div(self, rhs: GraphTensor<S>) -> Self::Output {
+        self.graph_ref.lock().unwrap().div(self.clone(), rhs)
     }
 }
 
