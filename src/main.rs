@@ -9,17 +9,6 @@ mod tensor;
 
 fn main() {
     new::main();
-    // let a: Tensor<Const<10_000>> = Tensor::new(vec![1.; 10_000]);
-    // let b: Tensor<Const<10_000>> = Tensor::new(vec![1.; 10_000]);
-    // let c: Tensor<Const<10_000>> = Tensor::new(vec![1.; 10_000]);
-    // let lin = Linear::<10_000, 5_000>::new();
-
-    // let graph = a.graph().add(&b).log().exp().exp().log().sub(&c);
-    // let mut graph = lin.forward(graph);
-
-    // graph.debug_optimize();
-
-    // graph.compute();
 }
 
 // struct Linear<const I: usize, const O: usize> {

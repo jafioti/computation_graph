@@ -54,8 +54,8 @@ enum Op {
 
 #[derive(Debug)]
 struct Graph {
-    tensors: HashMap<NodeIndex, Option<Vec<f32>>>,
-    op_nodes: HashMap<NodeIndex, Op>, // The Uuid of the resulting tensors after each op
+    tensors: HashMap<NodeIndex, Vec<f32>>,
+    op_nodes: HashMap<NodeIndex, Op>,
     graph: StableGraph<String, bool, Directed, u32>,
 }
 
@@ -104,10 +104,8 @@ impl Graph {
     }
 
     fn new_tensor<S: Shape>(&mut self) -> GraphTensor<S> {
-        let id = self.graph.add_node((self.tensors.len() + 1).to_string());
-        self.tensors.insert(id, None);
         GraphTensor {
-            id,
+            id: self.graph.add_node((self.tensors.len() + 1).to_string()),
             graph_ref: self,
             _phantom: Default::default(),
         }
@@ -160,7 +158,7 @@ impl Graph {
     }
 
     fn set_tensor<S: Shape>(&mut self, graph_tensor: GraphTensor<S>, data: Vec<f32>) {
-        *self.tensors.get_mut(&graph_tensor.id).unwrap() = Some(data);
+        self.tensors.insert(graph_tensor.id, data);
     }
 
     /// Run the full suite of optimizations
@@ -269,7 +267,7 @@ impl Graph {
                 let mut data = vec![];
                 let mut missed = false;
                 for e in self.graph.edges_directed(n, petgraph::Direction::Incoming) {
-                    if let Some(Some(e)) = self.tensors.get(&e.source()) {
+                    if let Some(e) = self.tensors.get(&e.source()) {
                         data.push(e);
                     } else {
                         missed = true;
@@ -335,7 +333,7 @@ impl Graph {
                         f
                     }
                 };
-                new_tensors.push((node, Some(f)));
+                new_tensors.push((node, f));
             }
 
             if new_tensors.is_empty() {
@@ -348,11 +346,7 @@ impl Graph {
         }
 
         ExecutedGraph {
-            tensors: self
-                .tensors
-                .into_iter()
-                .flat_map(|(id, data)| data.map(|data| (id, data)))
-                .collect(),
+            tensors: self.tensors,
         }
     }
 
