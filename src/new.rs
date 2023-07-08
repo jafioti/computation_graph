@@ -42,7 +42,7 @@ pub fn main() {
     println!("D: {:?}", d);
 }
 
-#[derive(Clone, Copy, Debug, IntoStaticStr)]
+#[derive(Clone, Copy, Debug, IntoStaticStr, PartialEq, Eq)]
 enum Op {
     Add,
     Sub,
@@ -176,6 +176,12 @@ impl Graph {
     }
 
     fn optimize(&mut self) {
+        self.unary_sequential_opt();
+        self.cse_opt();
+    }
+
+    /// Eliminate complementary unary sequential operations like `x.log().exp()`
+    fn unary_sequential_opt(&mut self) {
         // Scan through unary sequential eliminations
         for (id, op_node) in self.op_nodes.clone() {
             for outgoing_target in self
@@ -199,11 +205,55 @@ impl Graph {
                         .source();
 
                     self.graph.move_incoming_edges(pre_node, outgoing_target);
+                    *self.graph.node_weight_mut(outgoing_target).unwrap() =
+                        self.graph.node_weight(pre_node).unwrap().clone();
                     self.graph.remove_node(pre_node);
                     self.graph.remove_node(id);
                     self.op_nodes
                         .insert(outgoing_target, self.op_nodes[&pre_node]);
                 }
+            }
+        }
+    }
+
+    /// Common subexpression elimination (https://en.wikipedia.org/wiki/Common_subexpression_elimination)
+    fn cse_opt(&mut self) {
+        // Look for nodes that have the exact same srcs
+        loop {
+            // Loop cause I'm lazy
+            let mut eliminated = false;
+            let mut srcs_set = HashMap::new();
+            for node in self.graph.node_indices().collect_vec() {
+                let srcs = self
+                    .graph
+                    .edges_directed(node, petgraph::Direction::Incoming)
+                    .map(|e| e.source())
+                    .collect_vec();
+                if srcs.is_empty() || self.op_nodes.get(&node).is_none() {
+                    continue;
+                }
+                if let Some(other_node) = srcs_set.get(&srcs) {
+                    if self.op_nodes[&node] == self.op_nodes[other_node] {
+                        // Carry over outgoing edges from node to other_node
+                        for target in self
+                            .graph
+                            .edges_directed(node, petgraph::Direction::Outgoing)
+                            .map(|e| e.target())
+                            .collect_vec()
+                        {
+                            self.graph.add_edge(*other_node, target, false);
+                        }
+                        // Remove node
+                        self.graph.remove_node(node);
+                        eliminated = true;
+                        break;
+                    }
+                }
+                srcs_set.insert(srcs, node);
+            }
+
+            if !eliminated {
+                break;
             }
         }
     }
