@@ -1,16 +1,22 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     marker::PhantomData,
     ops::{Add, Div, Mul, Sub},
 };
 
 use itertools::Itertools;
-use petgraph::{graph::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Directed, Direction};
+use petgraph::{
+    graph::NodeIndex,
+    stable_graph::StableGraph,
+    visit::{EdgeRef, IntoEdgesDirected},
+    Directed, Direction,
+};
 use strum::IntoStaticStr;
 
-use crate::tensor::{Const, Shape};
+use crate::shape::{Const, Shape};
 
 type R1<const D: usize> = (Const<D>,);
+type R2<const A: usize, const B: usize> = (Const<A>, Const<B>);
 
 pub fn main() {
     let mut cx = Graph::new();
@@ -18,9 +24,11 @@ pub fn main() {
     let c = cx.new_tensor::<R1<3>>();
     let g = cx.new_tensor::<R1<3>>();
     let e = cx.new_tensor::<R1<3>>();
+    let f = cx.new_tensor::<R2<2, 3>>();
 
     let a = b * c + g;
     let d = (b * c / e).exp().log() - a;
+    let z = d.vec_mat_mul(f);
 
     let pre_optimized = cx.petgraph();
 
@@ -28,18 +36,25 @@ pub fn main() {
 
     display_petgraph(&pre_optimized.join(&cx.petgraph()));
 
-    cx.set_tensor(b, vec![1.0, 2.0, 3.0]);
-    cx.set_tensor(c, vec![1.0, 2.0, 3.0]);
-    cx.set_tensor(g, vec![1.0, 2.0, 3.0]);
-    cx.set_tensor(e, vec![1.0, 2.0, 3.0]);
+    b.set(vec![1.0, 2.0, 3.0]);
+    c.set(vec![1.0, 2.0, 3.0]);
+    g.set(vec![1.0, 2.0, 3.0]);
+    e.set(vec![1.0, 2.0, 3.0]);
+    f.set(vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0]);
 
-    let mut cx = cx.execute();
+    a.mark();
+    d.mark();
+    z.mark();
 
-    let a = cx.get(a).unwrap();
-    let d = cx.get(d).unwrap();
+    cx.execute();
+
+    let a = a.retrieve().unwrap();
+    let d = d.retrieve().unwrap();
+    let z = z.retrieve().unwrap();
 
     println!("A: {:?}", a);
     println!("D: {:?}", d);
+    println!("Z: {:?}", z);
 }
 
 #[derive(Clone, Copy, Debug, IntoStaticStr, PartialEq, Eq)]
@@ -50,23 +65,23 @@ enum Op {
     Div,
     Log,
     Exp,
+    VecMatMul,
+    /// Repeat a tensor along a new dimension at the start or end
+    Repeat(RepeatSide),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, IntoStaticStr, PartialEq, Eq)]
+enum RepeatSide {
+    Start,
+    End,
+}
+
+#[derive(Debug, Default)]
 struct Graph {
-    tensors: HashMap<NodeIndex, Vec<f32>>,
+    tensors: HashMap<NodeIndex, (Vec<f32>, Vec<usize>)>,
     op_nodes: HashMap<NodeIndex, Op>,
     graph: StableGraph<String, bool, Directed, u32>,
-}
-
-struct ExecutedGraph {
-    tensors: HashMap<NodeIndex, Vec<f32>>,
-}
-
-impl ExecutedGraph {
-    pub fn get<S: Shape>(&mut self, tensor: GraphTensor<S>) -> Option<Vec<f32>> {
-        self.tensors.remove(&tensor.id)
-    }
+    no_delete: HashSet<NodeIndex>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +100,19 @@ impl<S: Shape> GraphTensor<S> {
         }
     }
 
+    /// Mark this tensor to be retrieved later
+    fn mark(&self) {
+        unsafe { self.graph_ref.as_mut().unwrap().mark(*self) }
+    }
+
+    fn retrieve(self) -> Option<(Vec<f32>, Vec<usize>)> {
+        unsafe { self.graph_ref.as_mut().unwrap().tensors.remove(&self.id) }
+    }
+
+    fn set(&self, data: Vec<f32>) {
+        unsafe { self.graph_ref.as_mut().unwrap().set_tensor(*self, data) }
+    }
+
     fn log(self) -> GraphTensor<S> {
         unsafe { self.graph_ref.as_mut().unwrap().log(self) }
     }
@@ -94,13 +122,15 @@ impl<S: Shape> GraphTensor<S> {
     }
 }
 
+impl<const C: usize> GraphTensor<R1<C>> {
+    fn vec_mat_mul<const R: usize>(self, rhs: GraphTensor<R2<R, C>>) -> GraphTensor<R2<R, C>> {
+        unsafe { self.graph_ref.as_mut().unwrap().vec_mat_mul(self, rhs) }
+    }
+}
+
 impl Graph {
     fn new() -> Graph {
-        Graph {
-            tensors: HashMap::default(),
-            op_nodes: HashMap::default(),
-            graph: petgraph::stable_graph::StableGraph::default(),
-        }
+        Graph::default()
     }
 
     fn new_tensor<S: Shape>(&mut self) -> GraphTensor<S> {
@@ -157,8 +187,27 @@ impl Graph {
         GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
+    fn vec_mat_mul<const C: usize, const R: usize>(
+        &mut self,
+        vector: GraphTensor<R1<C>>,
+        matrix: GraphTensor<R2<R, C>>,
+    ) -> GraphTensor<R2<R, C>> {
+        // Multiply the matrix by the vector on each row
+        let new_id = self.graph.add_node("VecMatMul".to_string());
+        self.op_nodes.insert(new_id, Op::VecMatMul);
+        self.graph.add_edge(vector.id, new_id, false);
+        self.graph.add_edge(matrix.id, new_id, false);
+        GraphTensor::from_id(new_id, vector.graph_ref)
+    }
+
     fn set_tensor<S: Shape>(&mut self, graph_tensor: GraphTensor<S>, data: Vec<f32>) {
-        self.tensors.insert(graph_tensor.id, data);
+        self.tensors
+            .insert(graph_tensor.id, (data, S::realized_shape()));
+    }
+
+    /// Mark a tensor for retrival (memory won't free after executed)
+    fn mark<S: Shape>(&mut self, graph_tensor: GraphTensor<S>) {
+        self.no_delete.insert(graph_tensor.id);
     }
 
     /// Run the full suite of optimizations
@@ -223,8 +272,8 @@ impl Graph {
 
                 // If order doesn't matter, make sure  different ordered srcs match by sorting
                 let order_matters = match self.op_nodes[&node] {
-                    Op::Add | Op::Exp | Op::Log | Op::Mul => false,
-                    Op::Div | Op::Sub => true,
+                    Op::Add | Op::Exp | Op::Log | Op::Mul | Op::Repeat(_) => false,
+                    Op::Div | Op::Sub | Op::VecMatMul => true,
                 };
                 if !order_matters {
                     srcs.sort();
@@ -256,84 +305,131 @@ impl Graph {
         }
     }
 
-    fn execute(mut self) -> ExecutedGraph {
+    fn execute(&mut self) {
         loop {
             let mut new_tensors = vec![];
             // Find all executable ops
-            for (node, srcs) in self.graph.node_indices().filter_map(|n| {
-                if self.tensors.contains_key(&n) {
-                    return None;
-                }
-                let mut data = vec![];
-                let mut missed = false;
-                for e in self.graph.edges_directed(n, petgraph::Direction::Incoming) {
-                    if let Some(e) = self.tensors.get(&e.source()) {
-                        data.push(e);
-                    } else {
-                        missed = true;
-                        break;
+            for (node, srcs) in self
+                .graph
+                .node_indices()
+                .filter_map(|n| {
+                    if self.tensors.contains_key(&n) {
+                        return None;
                     }
-                }
-                if missed {
-                    None
-                } else {
+                    let mut data = vec![];
+                    for e in self
+                        .graph
+                        .edges_directed(n, petgraph::Direction::Incoming)
+                        .sorted_by_key(|e| e.id())
+                    {
+                        if let Some(e) = self.tensors.get(&e.source()) {
+                            data.push(e);
+                        } else {
+                            return None;
+                        }
+                    }
                     Some((n, data))
-                }
-            }) {
+                })
+                .collect_vec()
+            {
                 // All sources are ready, execute
                 let f = match self.op_nodes[&node] {
                     Op::Add => {
-                        let mut f = srcs[0].clone();
-                        for src in srcs.iter().skip(1) {
+                        let (mut f, shape) = srcs[0].clone();
+                        for (src, _) in srcs.iter().skip(1) {
                             for j in 0..src.len() {
                                 f[j] += src[j];
                             }
                         }
-                        f
+                        (f, shape)
                     }
                     Op::Sub => {
-                        let mut f = srcs[0].clone();
-                        for src in srcs.iter().skip(1) {
+                        let (mut f, shape) = srcs[0].clone();
+                        for (src, _) in srcs.iter().skip(1) {
                             for j in 0..src.len() {
                                 f[j] -= src[j];
                             }
                         }
-                        f
+                        (f, shape)
                     }
                     Op::Mul => {
-                        let mut f = srcs[0].clone();
-                        for src in srcs.iter().skip(1) {
+                        let (mut f, shape) = srcs[0].clone();
+                        for (src, _) in srcs.iter().skip(1) {
                             for j in 0..src.len() {
                                 f[j] *= src[j];
                             }
                         }
-                        f
+                        (f, shape)
                     }
                     Op::Div => {
-                        let mut f = srcs[0].clone();
-                        for src in srcs.iter().skip(1) {
+                        let (mut f, shape) = srcs[0].clone();
+                        for (src, _) in srcs.iter().skip(1) {
                             for j in 0..src.len() {
                                 f[j] /= src[j];
                             }
                         }
-                        f
+                        (f, shape)
                     }
                     Op::Log => {
-                        let mut f = srcs[0].clone();
+                        let (mut f, shape) = srcs[0].clone();
                         for i in &mut f {
                             *i = i.ln();
                         }
-                        f
+                        (f, shape)
                     }
                     Op::Exp => {
-                        let mut f = srcs[0].clone();
+                        let (mut f, shape) = srcs[0].clone();
                         for i in &mut f {
                             *i = i.exp();
                         }
-                        f
+                        (f, shape)
+                    }
+                    Op::VecMatMul => {
+                        let (vector, _) = srcs[0];
+                        let (mut matrix, mat_shape) = srcs[1].clone();
+                        for out in 0..mat_shape[0] {
+                            for inner in 0..mat_shape[1] {
+                                matrix[out * mat_shape[1] + inner] *= vector[inner];
+                            }
+                        }
+                        (matrix, mat_shape)
+                    }
+                    Op::Repeat(_) => {
+                        let (mut f, shape) = srcs[0].clone();
+                        for i in &mut f {
+                            *i = i.ln();
+                        }
+                        (f, shape)
                     }
                 };
                 new_tensors.push((node, f));
+            }
+
+            // Check if we can delete the source tensors now
+            for node in new_tensors.iter().map(|(t, _)| t) {
+                for source in self
+                    .graph
+                    .edges_directed(*node, Direction::Incoming)
+                    .map(|e| e.source())
+                    .filter(|e| self.graph.edges_directed(*e, Direction::Outgoing).count() == 1)
+                    .collect_vec()
+                {
+                    if !self.no_delete.contains(&source) {
+                        // Delete tensor and node
+                        self.tensors.remove(&source);
+                        self.graph.remove_node(source);
+                    }
+                }
+
+                // Remove edges going to current node
+                for edge in self
+                    .graph
+                    .edges_directed(*node, Direction::Incoming)
+                    .map(|e| e.id())
+                    .collect_vec()
+                {
+                    self.graph.remove_edge(edge);
+                }
             }
 
             if new_tensors.is_empty() {
@@ -343,10 +439,6 @@ impl Graph {
             for (k, v) in new_tensors {
                 self.tensors.insert(k, v);
             }
-        }
-
-        ExecutedGraph {
-            tensors: self.tensors,
         }
     }
 

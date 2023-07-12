@@ -1,11 +1,5 @@
-use crate::{graph::*, tensor::*};
-use std::ops::{Add, Sub};
-
-#[macro_use]
-mod graph;
 mod new;
-// mod reg;
-mod tensor;
+mod shape;
 
 fn main() {
     new::main();
