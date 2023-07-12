@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 
+use crate::shape::*;
 use std::{
     collections::{HashMap, HashSet},
     marker::PhantomData,
@@ -7,18 +8,10 @@ use std::{
 };
 
 use itertools::Itertools;
-use petgraph::{
-    graph::NodeIndex,
-    stable_graph::StableGraph,
-    visit::{EdgeRef, IntoEdgesDirected},
-    Directed, Direction,
-};
+use petgraph::{graph::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Directed, Direction};
 use strum::IntoStaticStr;
 
 use crate::shape::{Const, Shape};
-
-type R1<const D: usize> = (Const<D>,);
-type R2<const A: usize, const B: usize> = (Const<A>, Const<B>);
 
 pub fn main() {
     let mut cx = Graph::new();
@@ -26,27 +19,28 @@ pub fn main() {
     let c = cx.new_tensor::<R1<3>>();
     let g = cx.new_tensor::<R1<3>>();
     let e = cx.new_tensor::<R1<3>>();
-    let f = cx.new_tensor::<R2<2, 3>>();
+    // let f = cx.new_tensor::<R2<2, 3>>();
 
     let a = b * c + g;
-    let d = (b * c / e).exp().log() - a;
-    let z = d.vec_mat_mul(f);
+    let d = (b * c / e).exp().log().repeat_start::<2>();
+    let a = a.vec_mat_mul(d);
+    // let z = d.vec_mat_mul(f);
 
     b.set(vec![1.0, 2.0, 3.0]);
     c.set(vec![1.0, 2.0, 3.0]);
     g.set(vec![1.0, 2.0, 3.0]);
     e.set(vec![1.0, 2.0, 3.0]);
-    f.set(vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0]);
+    // f.set(vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0]);
 
     a.mark();
     d.mark();
-    z.mark();
+    // z.mark();
 
     cx.execute();
 
     let unoptimized_a = a.retrieve().unwrap();
     let unoptimized_d = d.retrieve().unwrap();
-    let unoptimized_z = z.retrieve().unwrap();
+    // let unoptimized_z = z.retrieve().unwrap();
 
     let pre_optimized = cx.petgraph();
 
@@ -57,7 +51,8 @@ pub fn main() {
     cx.execute();
     assert_close(&unoptimized_a, &a.retrieve().unwrap());
     assert_close(&unoptimized_d, &d.retrieve().unwrap());
-    assert_close(&unoptimized_z, &z.retrieve().unwrap());
+    println!("A: {:?}", unoptimized_a);
+    // assert_close(&unoptimized_z, &z.retrieve().unwrap());
 }
 
 fn assert_close(a: &Tensor, b: &Tensor) {
@@ -147,6 +142,14 @@ impl<S: Shape> GraphTensor<S> {
 
     fn exp(self) -> GraphTensor<S> {
         unsafe { self.graph_ref.as_mut().unwrap().exp(self) }
+    }
+
+    fn repeat_start<const R: usize>(self) -> GraphTensor<<S as Shape>::AddLeft<R>> {
+        unsafe { self.graph_ref.as_mut().unwrap().repeat_start(self) }
+    }
+
+    fn repeat_end<const R: usize>(self) -> GraphTensor<<S as Shape>::AddRight<R>> {
+        unsafe { self.graph_ref.as_mut().unwrap().repeat_end(self) }
     }
 }
 
@@ -241,6 +244,26 @@ impl Graph {
         self.graph.add_edge(vector.id, new_id, 0);
         self.graph.add_edge(matrix.id, new_id, 1);
         GraphTensor::from_id(new_id, vector.graph_ref)
+    }
+
+    fn repeat_start<const R: usize, S: Shape>(
+        &mut self,
+        tensor: GraphTensor<S>,
+    ) -> GraphTensor<<S as Shape>::AddLeft<R>> {
+        let new_id = self.graph.add_node("RepeatStart".to_string());
+        self.op_nodes.insert(new_id, Op::RepeatStart(R));
+        self.graph.add_edge(tensor.id, new_id, 0);
+        GraphTensor::from_id(new_id, tensor.graph_ref)
+    }
+
+    fn repeat_end<const R: usize, S: Shape>(
+        &mut self,
+        tensor: GraphTensor<S>,
+    ) -> GraphTensor<<S as Shape>::AddRight<R>> {
+        let new_id = self.graph.add_node("RepeatEnd".to_string());
+        self.op_nodes.insert(new_id, Op::RepeatEnd(R));
+        self.graph.add_edge(tensor.id, new_id, 0);
+        GraphTensor::from_id(new_id, tensor.graph_ref)
     }
 
     fn set_tensor<S: Shape>(&mut self, graph_tensor: GraphTensor<S>, data: Vec<f32>) {
