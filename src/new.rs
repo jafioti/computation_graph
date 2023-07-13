@@ -44,6 +44,10 @@ pub fn main() {
     cx.execute();
     assert_close(&unoptimized_a, &a.retrieve().unwrap());
     assert_close(&unoptimized_d, &d.retrieve().unwrap());
+    println!(
+        "A Shape: {:?} Strides: {:?}",
+        unoptimized_a.shape, unoptimized_a.strides
+    );
 }
 
 fn assert_close(a: &Tensor, b: &Tensor) {
@@ -297,13 +301,16 @@ impl Graph {
     }
 
     fn set_tensor<S: Shape>(&mut self, graph_tensor: GraphTensor<S>, data: Vec<f32>) {
-        let strides = S::realized_shape()
+        let mut strides = S::realized_shape()
             .into_iter()
+            .rev()
             .scan(1, |acc, x| {
+                let before = *acc;
                 *acc *= x;
-                Some(*acc)
+                Some(before)
             })
-            .collect();
+            .collect_vec();
+        strides.reverse();
         self.tensors.insert(
             graph_tensor.id,
             Tensor {
@@ -529,13 +536,8 @@ impl Graph {
                             .cycle()
                             .take(len * num_repeats)
                             .collect();
+                        tensor.strides.insert(0, tensor.shape.iter().product());
                         tensor.shape.insert(0, num_repeats);
-                        tensor.strides.insert(0, num_repeats);
-                        tensor
-                            .strides
-                            .iter_mut()
-                            .skip(1)
-                            .for_each(|i| *i *= num_repeats);
                         tensor
                     }
                     Op::RepeatEnd(num_repeats) => {
@@ -547,14 +549,7 @@ impl Graph {
                             .flat_map(|i| std::iter::repeat(i).take(num_repeats))
                             .collect();
                         tensor.shape.push(num_repeats);
-                        tensor.strides.push(
-                            tensor
-                                .strides
-                                .iter()
-                                .cloned()
-                                .reduce(|acc, i| acc * i)
-                                .unwrap(),
-                        );
+                        tensor.strides.push(1);
                         tensor
                     }
                 };
