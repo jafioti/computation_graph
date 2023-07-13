@@ -11,36 +11,29 @@ use itertools::Itertools;
 use petgraph::{graph::NodeIndex, stable_graph::StableGraph, visit::EdgeRef, Directed, Direction};
 use strum::IntoStaticStr;
 
-use crate::shape::{Const, Shape};
-
 pub fn main() {
     let mut cx = Graph::new();
     let b = cx.new_tensor::<R1<3>>();
     let c = cx.new_tensor::<R1<3>>();
     let g = cx.new_tensor::<R1<3>>();
     let e = cx.new_tensor::<R1<3>>();
-    // let f = cx.new_tensor::<R2<2, 3>>();
 
     let a = b * c + g;
     let d = (b * c / e).exp().log().repeat_start::<2>();
     let a = a.vec_mat_mul(d);
-    // let z = d.vec_mat_mul(f);
 
     b.set(vec![1.0, 2.0, 3.0]);
     c.set(vec![1.0, 2.0, 3.0]);
     g.set(vec![1.0, 2.0, 3.0]);
     e.set(vec![1.0, 2.0, 3.0]);
-    // f.set(vec![1.0, 2.0, 3.0, 3.0, 2.0, 1.0]);
 
     a.mark();
     d.mark();
-    // z.mark();
 
     cx.execute();
 
     let unoptimized_a = a.retrieve().unwrap();
     let unoptimized_d = d.retrieve().unwrap();
-    // let unoptimized_z = z.retrieve().unwrap();
 
     let pre_optimized = cx.petgraph();
 
@@ -51,8 +44,6 @@ pub fn main() {
     cx.execute();
     assert_close(&unoptimized_a, &a.retrieve().unwrap());
     assert_close(&unoptimized_d, &d.retrieve().unwrap());
-    println!("A: {:?}", unoptimized_a);
-    // assert_close(&unoptimized_z, &z.retrieve().unwrap());
 }
 
 fn assert_close(a: &Tensor, b: &Tensor) {
@@ -166,15 +157,15 @@ impl Graph {
 
     fn new_tensor<S: Shape>(&mut self) -> GraphTensor<S> {
         let mut tensor = GraphTensor {
-            id: self.graph.add_node(
-                (self
-                    .graph
+            id: self.graph.add_node(format!(
+                "{}{:?}",
+                self.graph
                     .node_indices()
                     .filter(|n| self.graph.edges_directed(*n, Direction::Outgoing).count() == 0)
                     .count()
-                    + 1)
-                .to_string(),
-            ),
+                    + 1,
+                S::realized_shape()
+            )),
             graph_ref: self,
             _phantom: Default::default(),
         };
@@ -188,7 +179,12 @@ impl Graph {
     }
 
     fn add<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
-        let new_id = self.graph.add_node("Add".to_string());
+        let new_id = self.graph.add_node(format!(
+            "Add{:?}x{:?}->{:?}",
+            S::realized_shape(),
+            S::realized_shape(),
+            S::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::Add);
         self.graph.add_edge(t1.id, new_id, 0);
         self.graph.add_edge(t2.id, new_id, 1);
@@ -196,7 +192,12 @@ impl Graph {
     }
 
     fn sub<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
-        let new_id = self.graph.add_node("Sub".to_string());
+        let new_id = self.graph.add_node(format!(
+            "Sub{:?}x{:?}->{:?}",
+            S::realized_shape(),
+            S::realized_shape(),
+            S::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::Sub);
         self.graph.add_edge(t1.id, new_id, 0);
         self.graph.add_edge(t2.id, new_id, 1);
@@ -204,7 +205,12 @@ impl Graph {
     }
 
     fn mul<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
-        let new_id = self.graph.add_node("Mul".to_string());
+        let new_id = self.graph.add_node(format!(
+            "Mul{:?}x{:?}->{:?}",
+            S::realized_shape(),
+            S::realized_shape(),
+            S::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::Mul);
         self.graph.add_edge(t1.id, new_id, 0);
         self.graph.add_edge(t2.id, new_id, 1);
@@ -212,7 +218,12 @@ impl Graph {
     }
 
     fn div<S: Shape>(&mut self, t1: GraphTensor<S>, t2: GraphTensor<S>) -> GraphTensor<S> {
-        let new_id = self.graph.add_node("Div".to_string());
+        let new_id = self.graph.add_node(format!(
+            "Div{:?}x{:?}->{:?}",
+            S::realized_shape(),
+            S::realized_shape(),
+            S::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::Div);
         self.graph.add_edge(t1.id, new_id, 0);
         self.graph.add_edge(t2.id, new_id, 1);
@@ -220,14 +231,20 @@ impl Graph {
     }
 
     fn log<S: Shape>(&mut self, t1: GraphTensor<S>) -> GraphTensor<S> {
-        let new_id = self.graph.add_node("Log".to_string());
+        let new_id = self
+            .graph
+            .add_node(format!("Log{:?}", S::realized_shape(),)); // I can't put the outgoing shape heere, no idea why
         self.op_nodes.insert(new_id, Op::Log);
         self.graph.add_edge(t1.id, new_id, 0);
         GraphTensor::from_id(new_id, t1.graph_ref)
     }
 
     fn exp<S: Shape>(&mut self, t1: GraphTensor<S>) -> GraphTensor<S> {
-        let new_id = self.graph.add_node("Exp".to_string());
+        let new_id = self.graph.add_node(format!(
+            "Exp{:?}->{:?}",
+            S::realized_shape(),
+            S::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::Exp);
         self.graph.add_edge(t1.id, new_id, 0);
         GraphTensor::from_id(new_id, t1.graph_ref)
@@ -239,7 +256,12 @@ impl Graph {
         matrix: GraphTensor<R2<R, C>>,
     ) -> GraphTensor<R2<R, C>> {
         // Multiply the matrix by the vector on each row
-        let new_id = self.graph.add_node("VecMatMul".to_string());
+        let new_id = self.graph.add_node(format!(
+            "VecMatMul{:?}x{:?}->{:?}",
+            R1::<C>::realized_shape(),
+            R2::<R, C>::realized_shape(),
+            R2::<R, C>::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::VecMatMul);
         self.graph.add_edge(vector.id, new_id, 0);
         self.graph.add_edge(matrix.id, new_id, 1);
@@ -250,7 +272,11 @@ impl Graph {
         &mut self,
         tensor: GraphTensor<S>,
     ) -> GraphTensor<<S as Shape>::AddLeft<R>> {
-        let new_id = self.graph.add_node("RepeatStart".to_string());
+        let new_id = self.graph.add_node(format!(
+            "RepeatStart{:?}->{:?}",
+            S::realized_shape(),
+            <<S as Shape>::AddLeft::<R> as Shape>::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::RepeatStart(R));
         self.graph.add_edge(tensor.id, new_id, 0);
         GraphTensor::from_id(new_id, tensor.graph_ref)
@@ -260,7 +286,11 @@ impl Graph {
         &mut self,
         tensor: GraphTensor<S>,
     ) -> GraphTensor<<S as Shape>::AddRight<R>> {
-        let new_id = self.graph.add_node("RepeatEnd".to_string());
+        let new_id = self.graph.add_node(format!(
+            "RepeatEnd{:?}->{:?}",
+            S::realized_shape(),
+            <<S as Shape>::AddRight::<R> as Shape>::realized_shape()
+        ));
         self.op_nodes.insert(new_id, Op::RepeatEnd(R));
         self.graph.add_edge(tensor.id, new_id, 0);
         GraphTensor::from_id(new_id, tensor.graph_ref)
@@ -596,7 +626,7 @@ fn display_petgraph(
     let url = format!(
         "https://dreampuf.github.io/GraphvizOnline/#{}",
         urlencoding::encode(
-            &petgraph::dot::Dot::with_config(&graph, &[petgraph::dot::Config::EdgeNoLabel])
+            &petgraph::dot::Dot::with_config(&graph, &[petgraph::dot::Config::EdgeNoLabel,])
                 .to_string()
         )
     );

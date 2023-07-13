@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::fmt::Debug;
 
 pub type R1<const D: usize> = (Const<D>,);
